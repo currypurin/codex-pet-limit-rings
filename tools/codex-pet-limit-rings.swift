@@ -31,6 +31,8 @@ private let ringsVisibleDefaultsKey = "CodexPetLimitRings.ringsVisible"
 private let ringColorPresetDefaultsPrefix = "CodexPetLimitRings.colorPreset."
 private let outerRingColorPresetDefaultsPrefix = "CodexPetLimitRings.outerColorPreset."
 private let innerRingColorPresetDefaultsPrefix = "CodexPetLimitRings.innerColorPreset."
+private let outerRingCustomColorDefaultsPrefix = "CodexPetLimitRings.outerCustomColor."
+private let innerRingCustomColorDefaultsPrefix = "CodexPetLimitRings.innerCustomColor."
 private let outerRingOpacityPresetDefaultsPrefix = "CodexPetLimitRings.outerOpacityPreset."
 private let innerRingOpacityPresetDefaultsPrefix = "CodexPetLimitRings.innerOpacityPreset."
 private let defaultRingColorPresetID = "default"
@@ -85,6 +87,46 @@ struct RingColorPreset {
             palette: RingColorPalette(
                 primary: NSColor(calibratedRed: 0.78, green: 0.52, blue: 0.30, alpha: 0.96),
                 secondary: NSColor(calibratedRed: 0.68, green: 0.48, blue: 0.32, alpha: 0.92)
+            )
+        ),
+        RingColorPreset(
+            id: "emerald",
+            title: "Emerald",
+            palette: RingColorPalette(
+                primary: NSColor(calibratedRed: 0.22, green: 0.95, blue: 0.46, alpha: 0.96),
+                secondary: NSColor(calibratedRed: 0.38, green: 0.88, blue: 0.62, alpha: 0.92)
+            )
+        ),
+        RingColorPreset(
+            id: "aqua",
+            title: "Aqua",
+            palette: RingColorPalette(
+                primary: NSColor(calibratedRed: 0.14, green: 0.86, blue: 1.00, alpha: 0.96),
+                secondary: NSColor(calibratedRed: 0.50, green: 0.96, blue: 1.00, alpha: 0.92)
+            )
+        ),
+        RingColorPreset(
+            id: "ruby",
+            title: "Ruby",
+            palette: RingColorPalette(
+                primary: NSColor(calibratedRed: 1.00, green: 0.24, blue: 0.42, alpha: 0.96),
+                secondary: NSColor(calibratedRed: 1.00, green: 0.48, blue: 0.56, alpha: 0.92)
+            )
+        ),
+        RingColorPreset(
+            id: "lime",
+            title: "Lime",
+            palette: RingColorPalette(
+                primary: NSColor(calibratedRed: 0.70, green: 1.00, blue: 0.24, alpha: 0.96),
+                secondary: NSColor(calibratedRed: 0.86, green: 1.00, blue: 0.40, alpha: 0.92)
+            )
+        ),
+        RingColorPreset(
+            id: "graphite",
+            title: "Graphite",
+            palette: RingColorPalette(
+                primary: NSColor(calibratedRed: 0.78, green: 0.82, blue: 0.88, alpha: 0.96),
+                secondary: NSColor(calibratedRed: 0.54, green: 0.60, blue: 0.68, alpha: 0.92)
             )
         )
     ]
@@ -850,6 +892,11 @@ final class LimitRingView: NSView {
 }
 
 final class LimitRingsApp: NSObject {
+    private enum RingTarget {
+        case outer
+        case inner
+    }
+
     private let config: LimitRingsConfig
     private let stateReader: LimitStateReader
     private let frameReader: PetFrameReader
@@ -861,6 +908,8 @@ final class LimitRingsApp: NSObject {
     private var showRingsItem: NSMenuItem?
     private var outerColorPresetItems: [NSMenuItem] = []
     private var innerColorPresetItems: [NSMenuItem] = []
+    private var outerCustomColorItem: NSMenuItem?
+    private var innerCustomColorItem: NSMenuItem?
     private var outerOpacityPresetItems: [NSMenuItem] = []
     private var innerOpacityPresetItems: [NSMenuItem] = []
     private var stateTimer: Timer?
@@ -876,6 +925,7 @@ final class LimitRingsApp: NSObject {
     private var startTime = Date()
     private var currentPetFrameAppKit: CGRect?
     private var currentAvatarID: String?
+    private var activeCustomColorTarget: RingTarget?
     private var dragCenterOffset: CGPoint?
     private var holdDraggedFrameUntil: Date?
     private var ringsVisible: Bool
@@ -1072,12 +1122,16 @@ final class LimitRingsApp: NSObject {
         let outerColorItem = NSMenuItem(title: "Outer Ring", action: nil, keyEquivalent: "")
         let outerColorMenu = NSMenu()
         outerColorPresetItems = makeRingColorPresetItems(action: #selector(selectOuterRingColorPreset(_:)), menu: outerColorMenu)
+        outerColorMenu.addItem(.separator())
+        outerCustomColorItem = makeCustomRingColorItem(title: "Custom...", action: #selector(chooseOuterCustomRingColor(_:)), menu: outerColorMenu)
         outerColorItem.submenu = outerColorMenu
         colorMenu.addItem(outerColorItem)
 
         let innerColorItem = NSMenuItem(title: "Inner Ring", action: nil, keyEquivalent: "")
         let innerColorMenu = NSMenu()
         innerColorPresetItems = makeRingColorPresetItems(action: #selector(selectInnerRingColorPreset(_:)), menu: innerColorMenu)
+        innerColorMenu.addItem(.separator())
+        innerCustomColorItem = makeCustomRingColorItem(title: "Custom...", action: #selector(chooseInnerCustomRingColor(_:)), menu: innerColorMenu)
         innerColorItem.submenu = innerColorMenu
         colorMenu.addItem(innerColorItem)
 
@@ -1134,6 +1188,13 @@ final class LimitRingsApp: NSObject {
             menu.addItem(item)
             return item
         }
+    }
+
+    private func makeCustomRingColorItem(title: String, action: Selector, menu: NSMenu) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+        return item
     }
 
     private func makeRingOpacityPresetItems(action: Selector, menu: NSMenu) -> [NSMenuItem] {
@@ -1201,12 +1262,16 @@ final class LimitRingsApp: NSObject {
     private func updateRingColorMenuItems() {
         let outerID = currentOuterRingColorPreset().id
         let innerID = currentInnerRingColorPreset().id
+        let outerUsesCustom = currentCustomRingColor(prefix: outerRingCustomColorDefaultsPrefix) != nil
+        let innerUsesCustom = currentCustomRingColor(prefix: innerRingCustomColorDefaultsPrefix) != nil
         for item in outerColorPresetItems {
-            item.state = (item.representedObject as? String) == outerID ? .on : .off
+            item.state = !outerUsesCustom && (item.representedObject as? String) == outerID ? .on : .off
         }
         for item in innerColorPresetItems {
-            item.state = (item.representedObject as? String) == innerID ? .on : .off
+            item.state = !innerUsesCustom && (item.representedObject as? String) == innerID ? .on : .off
         }
+        outerCustomColorItem?.state = outerUsesCustom ? .on : .off
+        innerCustomColorItem?.state = innerUsesCustom ? .on : .off
     }
 
     private func updateRingOpacityMenuItems() {
@@ -1265,9 +1330,23 @@ final class LimitRingsApp: NSObject {
 
     private func applyCurrentRingColorPreset() {
         ringView.colorPalette = RingColorPalette(
-            primary: currentOuterRingColorPreset().palette.primary,
-            secondary: currentInnerRingColorPreset().palette.secondary
+            primary: currentOuterRingColor(),
+            secondary: currentInnerRingColor()
         )
+    }
+
+    private func currentOuterRingColor() -> NSColor {
+        if let customColor = currentCustomRingColor(prefix: outerRingCustomColorDefaultsPrefix) {
+            return customColor.withAlphaComponent(0.96)
+        }
+        return currentOuterRingColorPreset().palette.primary
+    }
+
+    private func currentInnerRingColor() -> NSColor {
+        if let customColor = currentCustomRingColor(prefix: innerRingCustomColorDefaultsPrefix) {
+            return customColor.withAlphaComponent(0.92)
+        }
+        return currentInnerRingColorPreset().palette.secondary
     }
 
     private func currentOuterRingOpacityPreset() -> RingOpacityPreset {
@@ -1296,6 +1375,47 @@ final class LimitRingsApp: NSObject {
         prefix + (avatarID ?? defaultAvatarColorKey)
     }
 
+    private func customRingColorDefaultsKey(prefix: String, avatarID: String?) -> String {
+        prefix + (avatarID ?? defaultAvatarColorKey)
+    }
+
+    private func currentCustomRingColor(prefix: String) -> NSColor? {
+        let key = customRingColorDefaultsKey(prefix: prefix, avatarID: currentAvatarID)
+        return decodeRingColor(UserDefaults.standard.string(forKey: key))
+    }
+
+    private func customColorPrefix(forColorPresetPrefix prefix: String) -> String {
+        prefix == outerRingColorPresetDefaultsPrefix ? outerRingCustomColorDefaultsPrefix : innerRingCustomColorDefaultsPrefix
+    }
+
+    private func encodeRingColor(_ color: NSColor) -> String {
+        let rgb = color.usingColorSpace(.deviceRGB) ?? color
+        let red = colorComponentByte(rgb.redComponent)
+        let green = colorComponentByte(rgb.greenComponent)
+        let blue = colorComponentByte(rgb.blueComponent)
+        return String(format: "#%02X%02X%02X", red, green, blue)
+    }
+
+    private func decodeRingColor(_ rawValue: String?) -> NSColor? {
+        guard var value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        if value.hasPrefix("#") {
+            value.removeFirst()
+        }
+        guard value.count == 6, let number = UInt32(value, radix: 16) else {
+            return nil
+        }
+        let red = CGFloat((number >> 16) & 0xFF) / 255.0
+        let green = CGFloat((number >> 8) & 0xFF) / 255.0
+        let blue = CGFloat(number & 0xFF) / 255.0
+        return NSColor(calibratedRed: red, green: green, blue: blue, alpha: 1.0)
+    }
+
+    private func colorComponentByte(_ component: CGFloat) -> Int {
+        Int(round(min(max(component, 0.0), 1.0) * 255.0))
+    }
+
     private func ringOpacityDefaultsKey(prefix: String, avatarID: String?) -> String {
         prefix + (avatarID ?? defaultAvatarColorKey)
     }
@@ -1319,6 +1439,37 @@ final class LimitRingsApp: NSObject {
     private func selectRingColorPreset(_ sender: NSMenuItem, prefix: String) {
         guard let presetID = sender.representedObject as? String else { return }
         UserDefaults.standard.set(presetID, forKey: ringColorDefaultsKey(prefix: prefix, avatarID: currentAvatarID))
+        UserDefaults.standard.removeObject(forKey: customRingColorDefaultsKey(prefix: customColorPrefix(forColorPresetPrefix: prefix), avatarID: currentAvatarID))
+        applyCurrentRingColorPreset()
+        updateRingColorMenuItems()
+    }
+
+    @objc private func chooseOuterCustomRingColor(_ sender: NSMenuItem) {
+        openCustomRingColorPanel(for: .outer)
+    }
+
+    @objc private func chooseInnerCustomRingColor(_ sender: NSMenuItem) {
+        openCustomRingColorPanel(for: .inner)
+    }
+
+    private func openCustomRingColorPanel(for target: RingTarget) {
+        activeCustomColorTarget = target
+        let panel = NSColorPanel.shared
+        panel.showsAlpha = false
+        panel.isContinuous = true
+        panel.setTarget(self)
+        panel.setAction(#selector(customRingColorChanged(_:)))
+        panel.color = target == .outer ? currentOuterRingColor() : currentInnerRingColor()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.orderFront(nil)
+    }
+
+    @objc private func customRingColorChanged(_ sender: NSColorPanel) {
+        guard let target = activeCustomColorTarget else { return }
+        let prefix = target == .outer ? outerRingCustomColorDefaultsPrefix : innerRingCustomColorDefaultsPrefix
+        let presetPrefix = target == .outer ? outerRingColorPresetDefaultsPrefix : innerRingColorPresetDefaultsPrefix
+        UserDefaults.standard.set(encodeRingColor(sender.color), forKey: customRingColorDefaultsKey(prefix: prefix, avatarID: currentAvatarID))
+        UserDefaults.standard.removeObject(forKey: ringColorDefaultsKey(prefix: presetPrefix, avatarID: currentAvatarID))
         applyCurrentRingColorPreset()
         updateRingColorMenuItems()
     }
@@ -1342,6 +1493,8 @@ final class LimitRingsApp: NSObject {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: ringColorDefaultsKey(prefix: outerRingColorPresetDefaultsPrefix, avatarID: currentAvatarID))
         defaults.removeObject(forKey: ringColorDefaultsKey(prefix: innerRingColorPresetDefaultsPrefix, avatarID: currentAvatarID))
+        defaults.removeObject(forKey: customRingColorDefaultsKey(prefix: outerRingCustomColorDefaultsPrefix, avatarID: currentAvatarID))
+        defaults.removeObject(forKey: customRingColorDefaultsKey(prefix: innerRingCustomColorDefaultsPrefix, avatarID: currentAvatarID))
         defaults.removeObject(forKey: legacyRingColorDefaultsKey(for: currentAvatarID))
         applyCurrentRingColorPreset()
         updateRingColorMenuItems()

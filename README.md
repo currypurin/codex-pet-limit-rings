@@ -14,7 +14,7 @@ The rings are designed to be glanceable:
 
 - The outer ring shows the short-window limit remaining.
 - The inner ring shows the weekly limit remaining.
-- Outer and inner ring colors can be selected separately from menu-bar presets per pet, including purple and brown.
+- Outer and inner ring colors can be selected separately per pet from menu-bar presets or macOS `Custom...` colors.
 - Outer and inner ring opacity can also be selected separately per pet.
 - Color still moves to amber and red as capacity gets low.
 - Hovering over the pet or rings shows the exact remaining percentages and reset timing.
@@ -64,7 +64,7 @@ Choosing `Quit Codex Pet Limit Rings` from the menu bar stops the current app pr
 tools/uninstall-limit-rings.sh
 ```
 
-The uninstall script unloads the LaunchAgent, removes the app bundle, and clears saved app preferences such as ring visibility, per-pet color presets, and opacity presets.
+The uninstall script unloads the LaunchAgent, removes the app bundle, and clears saved app preferences such as ring visibility, per-pet color choices, custom colors, and opacity presets.
 
 ## Give This Repo To Codex
 
