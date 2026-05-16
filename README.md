@@ -18,7 +18,7 @@ The rings are designed to be glanceable:
 - Outer and inner ring opacity can also be selected separately per pet.
 - Color still moves to amber and red as capacity gets low.
 - Hovering over the pet or rings shows the exact remaining percentages and reset timing in a readout below the pet, clear of the pet art.
-- Double-clicking the pet or rings opens Codex's Quick Chat in a new tab using Codex's own `Cmd+Option+N` shortcut.
+- Double-clicking the pet or rings opens Codex's Quick Chat in a new tab using Codex's own `Option+Shift+N` shortcut.
 - Right-clicking the pet or rings opens a new Quick Chat tab, then opens Codex Settings in that tab.
 - A small menu-bar icon lets you hide the rings, choose colors and opacity, refresh data, or quit.
 

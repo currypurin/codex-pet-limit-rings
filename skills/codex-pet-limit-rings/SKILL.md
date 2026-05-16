@@ -68,7 +68,7 @@ The outer ring is the short-window remaining percentage. The inner ring is the w
 
 Pet wakeups and moves are driven by a filesystem watcher on `~/.codex/.codex-global-state.json`, with a slow fallback timer for missed events. Keep that event-driven path intact when changing frame-following behavior.
 
-Double-clicking the pet sends Codex's own `Cmd+Option+N` Quick Chat shortcut to the Codex process. Right-clicking uses the same shortcut first, then opens Codex Settings in the new tab. Do not implement this by mutating Codex's `active-workspace-roots`; a running Codex process keeps that state in memory.
+Double-clicking the pet sends Codex's own `Option+Shift+N` Quick Chat shortcut to the Codex process. Right-clicking uses the same shortcut first, then opens Codex Settings in the new tab. Do not implement this by mutating Codex's `active-workspace-roots`; a running Codex process keeps that state in memory.
 
 ## Editing Workflow
 

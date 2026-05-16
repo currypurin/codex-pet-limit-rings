@@ -45,6 +45,7 @@ private let liveUsageURL = URL(string: "https://chatgpt.com/backend-api/wham/usa
 private let codexBundleIdentifier = "com.openai.codex"
 private let codexAppBundleURL = URL(fileURLWithPath: "/Applications/Codex.app")
 private let codexQuickChatKeyCode: CGKeyCode = 0x2D
+private let codexQuickChatKeyFlags: CGEventFlags = [.maskAlternate, .maskShift]
 private let codexQuickChatActivationDelay: TimeInterval = 0.18
 private let codexQuickChatLaunchDelay: TimeInterval = 0.8
 private let codexQuickChatFollowupDelay: TimeInterval = 0.35
@@ -1628,15 +1629,14 @@ final class LimitRingsApp: NSObject {
             return
         }
 
-        let flags: CGEventFlags = [.maskCommand, .maskAlternate]
         guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: codexQuickChatKeyCode, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: codexQuickChatKeyCode, keyDown: false) else {
             NSSound.beep()
             return
         }
 
-        keyDown.flags = flags
-        keyUp.flags = flags
+        keyDown.flags = codexQuickChatKeyFlags
+        keyUp.flags = codexQuickChatKeyFlags
         keyDown.postToPid(app.processIdentifier)
         keyUp.postToPid(app.processIdentifier)
 
