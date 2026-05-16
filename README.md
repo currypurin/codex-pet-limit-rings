@@ -17,7 +17,7 @@ The rings are designed to be glanceable:
 - Outer and inner ring colors can be selected separately per pet from menu-bar presets or macOS `Custom...` colors.
 - Outer and inner ring opacity can also be selected separately per pet.
 - Color still moves to amber and red as capacity gets low.
-- Hovering over the pet or rings shows the exact remaining percentages and reset timing.
+- Hovering over the pet or rings shows the exact remaining percentages and reset timing in a readout below the pet, clear of the pet art.
 - A small menu-bar icon lets you hide the rings, choose colors and opacity, refresh data, or quit.
 
 When the Codex pet is closed, the rings disappear. When the pet comes back, they come back too. On multi-display setups, the rings stay with the pet instead of jumping to whichever screen is focused.
