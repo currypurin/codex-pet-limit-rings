@@ -1606,7 +1606,7 @@ final class LimitRingsApp: NSObject {
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: codexBundleIdentifier).first {
             app.activate(options: [.activateAllWindows])
             DispatchQueue.main.asyncAfter(deadline: .now() + codexQuickChatActivationDelay) { [weak self] in
-                self?.sendCodexQuickChatShortcut(completion: completion)
+                self?.sendCodexQuickChatShortcut(to: app, completion: completion)
             }
             return
         }
@@ -1615,12 +1615,14 @@ final class LimitRingsApp: NSObject {
         NSWorkspace.shared.openApplication(at: codexAppBundleURL, configuration: configuration) { [weak self] app, _ in
             app?.activate(options: [.activateAllWindows])
             DispatchQueue.main.asyncAfter(deadline: .now() + codexQuickChatLaunchDelay) {
-                self?.sendCodexQuickChatShortcut(completion: completion)
+                if let app {
+                    self?.sendCodexQuickChatShortcut(to: app, completion: completion)
+                }
             }
         }
     }
 
-    private func sendCodexQuickChatShortcut(completion: (() -> Void)? = nil) {
+    private func sendCodexQuickChatShortcut(to app: NSRunningApplication, completion: (() -> Void)? = nil) {
         guard accessibilityTrustedForShortcut() else {
             NSSound.beep()
             return
@@ -1635,8 +1637,8 @@ final class LimitRingsApp: NSObject {
 
         keyDown.flags = flags
         keyUp.flags = flags
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        keyDown.postToPid(app.processIdentifier)
+        keyUp.postToPid(app.processIdentifier)
 
         guard let completion else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + codexQuickChatFollowupDelay, execute: completion)
