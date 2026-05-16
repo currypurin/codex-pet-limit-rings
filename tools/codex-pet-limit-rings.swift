@@ -28,7 +28,96 @@ private let limitStatePollInterval: TimeInterval = 20.0
 private let petFrameFallbackPollInterval: TimeInterval = 2.0
 private let petFrameStateDebounceInterval: TimeInterval = 0.035
 private let ringsVisibleDefaultsKey = "CodexPetLimitRings.ringsVisible"
+private let ringColorPresetDefaultsPrefix = "CodexPetLimitRings.colorPreset."
+private let outerRingColorPresetDefaultsPrefix = "CodexPetLimitRings.outerColorPreset."
+private let innerRingColorPresetDefaultsPrefix = "CodexPetLimitRings.innerColorPreset."
+private let outerRingOpacityPresetDefaultsPrefix = "CodexPetLimitRings.outerOpacityPreset."
+private let innerRingOpacityPresetDefaultsPrefix = "CodexPetLimitRings.innerOpacityPreset."
+private let defaultRingColorPresetID = "default"
+private let defaultRingOpacityPresetID = "100"
+private let defaultAvatarColorKey = "__default__"
 private let liveUsageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+
+struct RingColorPalette {
+    var primary: NSColor
+    var secondary: NSColor
+
+    static let `default` = RingColorPalette(
+        primary: NSColor(calibratedRed: 0.24, green: 0.92, blue: 0.74, alpha: 0.96),
+        secondary: NSColor(calibratedRed: 0.36, green: 0.70, blue: 1.00, alpha: 0.90)
+    )
+}
+
+struct RingColorPreset {
+    var id: String
+    var title: String
+    var palette: RingColorPalette
+
+    static let all: [RingColorPreset] = [
+        RingColorPreset(id: defaultRingColorPresetID, title: "Default", palette: .default),
+        RingColorPreset(
+            id: "sakura",
+            title: "Sakura",
+            palette: RingColorPalette(
+                primary: NSColor(calibratedRed: 1.00, green: 0.48, blue: 0.70, alpha: 0.96),
+                secondary: NSColor(calibratedRed: 0.78, green: 0.62, blue: 1.00, alpha: 0.92)
+            )
+        ),
+        RingColorPreset(
+            id: "amber",
+            title: "Amber",
+            palette: RingColorPalette(
+                primary: NSColor(calibratedRed: 1.00, green: 0.67, blue: 0.24, alpha: 0.96),
+                secondary: NSColor(calibratedRed: 1.00, green: 0.86, blue: 0.34, alpha: 0.92)
+            )
+        ),
+        RingColorPreset(
+            id: "purple",
+            title: "Purple",
+            palette: RingColorPalette(
+                primary: NSColor(calibratedRed: 0.72, green: 0.48, blue: 1.00, alpha: 0.96),
+                secondary: NSColor(calibratedRed: 0.82, green: 0.58, blue: 1.00, alpha: 0.92)
+            )
+        ),
+        RingColorPreset(
+            id: "brown",
+            title: "Brown",
+            palette: RingColorPalette(
+                primary: NSColor(calibratedRed: 0.78, green: 0.52, blue: 0.30, alpha: 0.96),
+                secondary: NSColor(calibratedRed: 0.68, green: 0.48, blue: 0.32, alpha: 0.92)
+            )
+        )
+    ]
+
+    static func preset(for id: String?) -> RingColorPreset {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
+
+struct RingOpacitySettings {
+    var primary: CGFloat
+    var secondary: CGFloat
+
+    static let `default` = RingOpacitySettings(primary: 1.0, secondary: 1.0)
+}
+
+struct RingOpacityPreset {
+    var id: String
+    var title: String
+    var opacity: CGFloat
+
+    static let all: [RingOpacityPreset] = [
+        RingOpacityPreset(id: defaultRingOpacityPresetID, title: "100%", opacity: 1.00),
+        RingOpacityPreset(id: "85", title: "85%", opacity: 0.85),
+        RingOpacityPreset(id: "70", title: "70%", opacity: 0.70),
+        RingOpacityPreset(id: "55", title: "55%", opacity: 0.55),
+        RingOpacityPreset(id: "40", title: "40%", opacity: 0.40)
+    ]
+
+    static func preset(for id: String?) -> RingOpacityPreset {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
 
 private struct EventPayload: Decodable {
     var type: String
@@ -273,6 +362,17 @@ final class PetFrameReader {
         return CGRect(x: x + left, y: y + top, width: width, height: height)
     }
 
+    func readSelectedAvatarID() -> String? {
+        guard let data = try? Data(contentsOf: globalStatePath),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let atomState = root["electron-persisted-atom-state"] as? [String: Any],
+              let avatarID = atomState["selected-avatar-id"] as? String,
+              !avatarID.isEmpty else {
+            return nil
+        }
+        return avatarID
+    }
+
     private func isAvatarOverlayOpen(_ root: [String: Any]) -> Bool {
         if let isOpen = root["electron-avatar-overlay-open"] as? Bool {
             return isOpen
@@ -301,6 +401,8 @@ struct LimitRingRenderer {
     var state: LimitState
     var phase: Double
     var showsReadout: Bool = false
+    var colorPalette: RingColorPalette = .default
+    var opacitySettings: RingOpacitySettings = .default
 
     func draw(in rect: CGRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
@@ -328,10 +430,11 @@ struct LimitRingRenderer {
                 bucket: primary,
                 color: color(forRemaining: primary.remainingPercent, role: .primary),
                 trackAlpha: 0.20,
+                opacity: opacity(for: .primary),
                 phase: phase
             )
         } else {
-            drawMissingRing(context, center: center, radius: outerRadius, lineWidth: 7.0)
+            drawMissingRing(context, center: center, radius: outerRadius, lineWidth: 7.0, opacity: opacity(for: .primary))
         }
 
         if let secondary = state.secondary {
@@ -343,6 +446,7 @@ struct LimitRingRenderer {
                 bucket: secondary,
                 color: color(forRemaining: secondary.remainingPercent, role: .secondary),
                 trackAlpha: 0.14,
+                opacity: opacity(for: .secondary),
                 phase: phase + 0.18
             )
         }
@@ -413,8 +517,10 @@ struct LimitRingRenderer {
         bucket: LimitBucket,
         color: NSColor,
         trackAlpha: CGFloat,
+        opacity: CGFloat,
         phase: Double
     ) {
+        let opacity = clampOpacity(opacity)
         let start = -CGFloat.pi / 2.0
         let remaining = CGFloat(bucket.remainingPercent / 100.0)
         let end = start + max(remaining, 0.018) * CGFloat.pi * 2.0
@@ -422,36 +528,36 @@ struct LimitRingRenderer {
         context.saveGState()
         context.setLineCap(.round)
         context.setLineWidth(lineWidth)
-        context.setStrokeColor(NSColor(calibratedWhite: 0.0, alpha: 0.22).cgColor)
+        context.setStrokeColor(NSColor(calibratedWhite: 0.0, alpha: 0.22 * opacity).cgColor)
         context.addArc(center: center, radius: radius + 1.0, startAngle: 0, endAngle: CGFloat.pi * 2.0, clockwise: false)
         context.strokePath()
 
-        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: trackAlpha).cgColor)
+        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: trackAlpha * opacity).cgColor)
         context.addArc(center: center, radius: radius, startAngle: 0, endAngle: CGFloat.pi * 2.0, clockwise: false)
         context.strokePath()
 
-        context.setShadow(offset: .zero, blur: 10.0, color: color.withAlphaComponent(0.42).cgColor)
-        context.setStrokeColor(color.withAlphaComponent(0.30).cgColor)
+        context.setShadow(offset: .zero, blur: 10.0, color: color.withAlphaComponent(0.42 * opacity).cgColor)
+        context.setStrokeColor(color.withAlphaComponent(0.30 * opacity).cgColor)
         context.setLineWidth(lineWidth + 6.0)
         context.addArc(center: center, radius: radius, startAngle: start, endAngle: end, clockwise: false)
         context.strokePath()
 
-        context.setShadow(offset: .zero, blur: 4.0, color: color.withAlphaComponent(0.52).cgColor)
-        context.setStrokeColor(color.cgColor)
+        context.setShadow(offset: .zero, blur: 4.0, color: color.withAlphaComponent(0.52 * opacity).cgColor)
+        context.setStrokeColor(color.withAlphaComponent(color.alphaComponent * opacity).cgColor)
         context.setLineWidth(lineWidth)
         context.addArc(center: center, radius: radius, startAngle: start, endAngle: end, clockwise: false)
         context.strokePath()
 
         let glintAngle = start + CGFloat(phase.truncatingRemainder(dividingBy: 1.0)) * CGFloat.pi * 2.0
         let glint = point(center: center, radius: radius, angle: glintAngle)
-        context.setFillColor(NSColor(calibratedWhite: 1.0, alpha: 0.38).cgColor)
+        context.setFillColor(NSColor(calibratedWhite: 1.0, alpha: 0.38 * opacity).cgColor)
         context.fillEllipse(in: CGRect(x: glint.x - 1.8, y: glint.y - 1.8, width: 3.6, height: 3.6))
         context.restoreGState()
     }
 
-    private func drawMissingRing(_ context: CGContext, center: CGPoint, radius: CGFloat, lineWidth: CGFloat) {
+    private func drawMissingRing(_ context: CGContext, center: CGPoint, radius: CGFloat, lineWidth: CGFloat, opacity: CGFloat) {
         context.saveGState()
-        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.16).cgColor)
+        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.16 * clampOpacity(opacity)).cgColor)
         context.setLineWidth(lineWidth)
         context.setLineCap(.round)
         context.addArc(center: center, radius: radius, startAngle: 0, endAngle: CGFloat.pi * 1.74, clockwise: false)
@@ -674,12 +780,13 @@ struct LimitRingRenderer {
         let dots = Array(state.additional.prefix(8))
         guard dots.count > 0 else { return }
         context.saveGState()
+        let opacity = clampOpacity(opacitySettings.primary)
         for (index, item) in dots.enumerated() {
             let angle = -CGFloat.pi / 2.0 + CGFloat(index) / CGFloat(max(dots.count, 1)) * CGFloat.pi * 2.0
             let dot = point(center: center, radius: radius, angle: angle)
             let color = color(forRemaining: item.bucket.remainingPercent, role: .primary)
-            context.setShadow(offset: .zero, blur: 5.0, color: color.withAlphaComponent(0.35).cgColor)
-            context.setFillColor(color.withAlphaComponent(0.82).cgColor)
+            context.setShadow(offset: .zero, blur: 5.0, color: color.withAlphaComponent(0.35 * opacity).cgColor)
+            context.setFillColor(color.withAlphaComponent(0.82 * opacity).cgColor)
             context.fillEllipse(in: CGRect(x: dot.x - 2.4, y: dot.y - 2.4, width: 4.8, height: 4.8))
         }
         context.restoreGState()
@@ -693,9 +800,17 @@ struct LimitRingRenderer {
             return NSColor(calibratedRed: 1.00, green: 0.68, blue: 0.20, alpha: 0.96)
         }
         if role == .secondary {
-            return NSColor(calibratedRed: 0.36, green: 0.70, blue: 1.00, alpha: 0.90)
+            return colorPalette.secondary
         }
-        return NSColor(calibratedRed: 0.24, green: 0.92, blue: 0.74, alpha: 0.96)
+        return colorPalette.primary
+    }
+
+    private func opacity(for role: RingRole) -> CGFloat {
+        role == .primary ? opacitySettings.primary : opacitySettings.secondary
+    }
+
+    private func clampOpacity(_ opacity: CGFloat) -> CGFloat {
+        min(max(opacity, 0.0), 1.0)
     }
 
     private func point(center: CGPoint, radius: CGFloat, angle: CGFloat) -> CGPoint {
@@ -720,11 +835,17 @@ final class LimitRingView: NSView {
     var showsReadout: Bool = false {
         didSet { needsDisplay = true }
     }
+    var colorPalette: RingColorPalette = .default {
+        didSet { needsDisplay = true }
+    }
+    var opacitySettings: RingOpacitySettings = .default {
+        didSet { needsDisplay = true }
+    }
 
     override var isOpaque: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
-        LimitRingRenderer(state: state, phase: phase, showsReadout: showsReadout).draw(in: bounds)
+        LimitRingRenderer(state: state, phase: phase, showsReadout: showsReadout, colorPalette: colorPalette, opacitySettings: opacitySettings).draw(in: bounds)
     }
 }
 
@@ -738,6 +859,10 @@ final class LimitRingsApp: NSObject {
     private var statusItem: NSStatusItem?
     private var summaryItem: NSMenuItem?
     private var showRingsItem: NSMenuItem?
+    private var outerColorPresetItems: [NSMenuItem] = []
+    private var innerColorPresetItems: [NSMenuItem] = []
+    private var outerOpacityPresetItems: [NSMenuItem] = []
+    private var innerOpacityPresetItems: [NSMenuItem] = []
     private var stateTimer: Timer?
     private var frameTimer: Timer?
     private var animationTimer: Timer?
@@ -750,6 +875,7 @@ final class LimitRingsApp: NSObject {
     private var pendingFrameUpdate: DispatchWorkItem?
     private var startTime = Date()
     private var currentPetFrameAppKit: CGRect?
+    private var currentAvatarID: String?
     private var dragCenterOffset: CGPoint?
     private var holdDraggedFrameUntil: Date?
     private var ringsVisible: Bool
@@ -777,6 +903,8 @@ final class LimitRingsApp: NSObject {
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         super.init()
+        applyCurrentRingColorPreset()
+        applyCurrentRingOpacityPreset()
     }
 
     deinit {
@@ -892,6 +1020,7 @@ final class LimitRingsApp: NSObject {
 
         guard let petFrame = frameReader.readPetFrameTopLeft() else {
             currentPetFrameAppKit = nil
+            updateCurrentAvatarID(nil)
             dragCenterOffset = nil
             ringView.showsReadout = false
             panel.orderOut(nil)
@@ -899,6 +1028,7 @@ final class LimitRingsApp: NSObject {
         }
 
         currentPetFrameAppKit = appKitRectFromTopLeft(petFrame)
+        updateCurrentAvatarID(frameReader.readSelectedAvatarID())
         setPanelFrame(forPetFrameTopLeft: petFrame)
         if ringsVisible {
             panel.orderFrontRegardless()
@@ -937,6 +1067,48 @@ final class LimitRingsApp: NSObject {
         menu.addItem(showItem)
         showRingsItem = showItem
 
+        let colorItem = NSMenuItem(title: "Ring Colors", action: nil, keyEquivalent: "")
+        let colorMenu = NSMenu()
+        let outerColorItem = NSMenuItem(title: "Outer Ring", action: nil, keyEquivalent: "")
+        let outerColorMenu = NSMenu()
+        outerColorPresetItems = makeRingColorPresetItems(action: #selector(selectOuterRingColorPreset(_:)), menu: outerColorMenu)
+        outerColorItem.submenu = outerColorMenu
+        colorMenu.addItem(outerColorItem)
+
+        let innerColorItem = NSMenuItem(title: "Inner Ring", action: nil, keyEquivalent: "")
+        let innerColorMenu = NSMenu()
+        innerColorPresetItems = makeRingColorPresetItems(action: #selector(selectInnerRingColorPreset(_:)), menu: innerColorMenu)
+        innerColorItem.submenu = innerColorMenu
+        colorMenu.addItem(innerColorItem)
+
+        colorMenu.addItem(.separator())
+        let resetColorItem = NSMenuItem(title: "Reset This Pet", action: #selector(resetRingColorForCurrentPet(_:)), keyEquivalent: "")
+        resetColorItem.target = self
+        colorMenu.addItem(resetColorItem)
+        colorItem.submenu = colorMenu
+        menu.addItem(colorItem)
+
+        let opacityItem = NSMenuItem(title: "Ring Opacity", action: nil, keyEquivalent: "")
+        let opacityMenu = NSMenu()
+        let outerOpacityItem = NSMenuItem(title: "Outer Ring", action: nil, keyEquivalent: "")
+        let outerOpacityMenu = NSMenu()
+        outerOpacityPresetItems = makeRingOpacityPresetItems(action: #selector(selectOuterRingOpacityPreset(_:)), menu: outerOpacityMenu)
+        outerOpacityItem.submenu = outerOpacityMenu
+        opacityMenu.addItem(outerOpacityItem)
+
+        let innerOpacityItem = NSMenuItem(title: "Inner Ring", action: nil, keyEquivalent: "")
+        let innerOpacityMenu = NSMenu()
+        innerOpacityPresetItems = makeRingOpacityPresetItems(action: #selector(selectInnerRingOpacityPreset(_:)), menu: innerOpacityMenu)
+        innerOpacityItem.submenu = innerOpacityMenu
+        opacityMenu.addItem(innerOpacityItem)
+
+        opacityMenu.addItem(.separator())
+        let resetOpacityItem = NSMenuItem(title: "Reset This Pet", action: #selector(resetRingOpacityForCurrentPet(_:)), keyEquivalent: "")
+        resetOpacityItem.target = self
+        opacityMenu.addItem(resetOpacityItem)
+        opacityItem.submenu = opacityMenu
+        menu.addItem(opacityItem)
+
         let refreshItem = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow(_:)), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
@@ -950,6 +1122,28 @@ final class LimitRingsApp: NSObject {
         item.menu = menu
         updateSummaryMenuItem()
         updateShowRingsMenuItem()
+        updateRingColorMenuItems()
+        updateRingOpacityMenuItems()
+    }
+
+    private func makeRingColorPresetItems(action: Selector, menu: NSMenu) -> [NSMenuItem] {
+        RingColorPreset.all.map { preset in
+            let item = NSMenuItem(title: preset.title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = preset.id
+            menu.addItem(item)
+            return item
+        }
+    }
+
+    private func makeRingOpacityPresetItems(action: Selector, menu: NSMenu) -> [NSMenuItem] {
+        RingOpacityPreset.all.map { preset in
+            let item = NSMenuItem(title: preset.title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = preset.id
+            menu.addItem(item)
+            return item
+        }
     }
 
     private func makeStatusBarIcon() -> NSImage {
@@ -1004,6 +1198,28 @@ final class LimitRingsApp: NSObject {
         showRingsItem?.state = ringsVisible ? .on : .off
     }
 
+    private func updateRingColorMenuItems() {
+        let outerID = currentOuterRingColorPreset().id
+        let innerID = currentInnerRingColorPreset().id
+        for item in outerColorPresetItems {
+            item.state = (item.representedObject as? String) == outerID ? .on : .off
+        }
+        for item in innerColorPresetItems {
+            item.state = (item.representedObject as? String) == innerID ? .on : .off
+        }
+    }
+
+    private func updateRingOpacityMenuItems() {
+        let outerID = currentOuterRingOpacityPreset().id
+        let innerID = currentInnerRingOpacityPreset().id
+        for item in outerOpacityPresetItems {
+            item.state = (item.representedObject as? String) == outerID ? .on : .off
+        }
+        for item in innerOpacityPresetItems {
+            item.state = (item.representedObject as? String) == innerID ? .on : .off
+        }
+    }
+
     private func updateRingVisibility() {
         updateShowRingsMenuItem()
         if ringsVisible, currentPetFrameAppKit != nil {
@@ -1021,8 +1237,122 @@ final class LimitRingsApp: NSObject {
         updateRingVisibility()
     }
 
+    private func updateCurrentAvatarID(_ avatarID: String?) {
+        guard currentAvatarID != avatarID else { return }
+        currentAvatarID = avatarID
+        applyCurrentRingColorPreset()
+        applyCurrentRingOpacityPreset()
+        updateRingColorMenuItems()
+        updateRingOpacityMenuItems()
+    }
+
+    private func currentOuterRingColorPreset() -> RingColorPreset {
+        currentRingColorPreset(prefix: outerRingColorPresetDefaultsPrefix)
+    }
+
+    private func currentInnerRingColorPreset() -> RingColorPreset {
+        currentRingColorPreset(prefix: innerRingColorPresetDefaultsPrefix)
+    }
+
+    private func currentRingColorPreset(prefix: String) -> RingColorPreset {
+        let defaults = UserDefaults.standard
+        let petPresetID = defaults.string(forKey: ringColorDefaultsKey(prefix: prefix, avatarID: currentAvatarID))
+        let fallbackPresetID = currentAvatarID == nil ? nil : defaults.string(forKey: ringColorDefaultsKey(prefix: prefix, avatarID: nil))
+        let legacyPetPresetID = defaults.string(forKey: legacyRingColorDefaultsKey(for: currentAvatarID))
+        let legacyFallbackPresetID = currentAvatarID == nil ? nil : defaults.string(forKey: legacyRingColorDefaultsKey(for: nil))
+        return RingColorPreset.preset(for: petPresetID ?? fallbackPresetID ?? legacyPetPresetID ?? legacyFallbackPresetID)
+    }
+
+    private func applyCurrentRingColorPreset() {
+        ringView.colorPalette = RingColorPalette(
+            primary: currentOuterRingColorPreset().palette.primary,
+            secondary: currentInnerRingColorPreset().palette.secondary
+        )
+    }
+
+    private func currentOuterRingOpacityPreset() -> RingOpacityPreset {
+        currentRingOpacityPreset(prefix: outerRingOpacityPresetDefaultsPrefix)
+    }
+
+    private func currentInnerRingOpacityPreset() -> RingOpacityPreset {
+        currentRingOpacityPreset(prefix: innerRingOpacityPresetDefaultsPrefix)
+    }
+
+    private func currentRingOpacityPreset(prefix: String) -> RingOpacityPreset {
+        let defaults = UserDefaults.standard
+        let petPresetID = defaults.string(forKey: ringOpacityDefaultsKey(prefix: prefix, avatarID: currentAvatarID))
+        let fallbackPresetID = currentAvatarID == nil ? nil : defaults.string(forKey: ringOpacityDefaultsKey(prefix: prefix, avatarID: nil))
+        return RingOpacityPreset.preset(for: petPresetID ?? fallbackPresetID)
+    }
+
+    private func applyCurrentRingOpacityPreset() {
+        ringView.opacitySettings = RingOpacitySettings(
+            primary: currentOuterRingOpacityPreset().opacity,
+            secondary: currentInnerRingOpacityPreset().opacity
+        )
+    }
+
+    private func ringColorDefaultsKey(prefix: String, avatarID: String?) -> String {
+        prefix + (avatarID ?? defaultAvatarColorKey)
+    }
+
+    private func ringOpacityDefaultsKey(prefix: String, avatarID: String?) -> String {
+        prefix + (avatarID ?? defaultAvatarColorKey)
+    }
+
+    private func legacyRingColorDefaultsKey(for avatarID: String?) -> String {
+        ringColorPresetDefaultsPrefix + (avatarID ?? defaultAvatarColorKey)
+    }
+
     @objc private func toggleRings(_ sender: NSMenuItem) {
         setRingsVisible(!ringsVisible)
+    }
+
+    @objc private func selectOuterRingColorPreset(_ sender: NSMenuItem) {
+        selectRingColorPreset(sender, prefix: outerRingColorPresetDefaultsPrefix)
+    }
+
+    @objc private func selectInnerRingColorPreset(_ sender: NSMenuItem) {
+        selectRingColorPreset(sender, prefix: innerRingColorPresetDefaultsPrefix)
+    }
+
+    private func selectRingColorPreset(_ sender: NSMenuItem, prefix: String) {
+        guard let presetID = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(presetID, forKey: ringColorDefaultsKey(prefix: prefix, avatarID: currentAvatarID))
+        applyCurrentRingColorPreset()
+        updateRingColorMenuItems()
+    }
+
+    @objc private func selectOuterRingOpacityPreset(_ sender: NSMenuItem) {
+        selectRingOpacityPreset(sender, prefix: outerRingOpacityPresetDefaultsPrefix)
+    }
+
+    @objc private func selectInnerRingOpacityPreset(_ sender: NSMenuItem) {
+        selectRingOpacityPreset(sender, prefix: innerRingOpacityPresetDefaultsPrefix)
+    }
+
+    private func selectRingOpacityPreset(_ sender: NSMenuItem, prefix: String) {
+        guard let presetID = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(presetID, forKey: ringOpacityDefaultsKey(prefix: prefix, avatarID: currentAvatarID))
+        applyCurrentRingOpacityPreset()
+        updateRingOpacityMenuItems()
+    }
+
+    @objc private func resetRingColorForCurrentPet(_ sender: NSMenuItem) {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: ringColorDefaultsKey(prefix: outerRingColorPresetDefaultsPrefix, avatarID: currentAvatarID))
+        defaults.removeObject(forKey: ringColorDefaultsKey(prefix: innerRingColorPresetDefaultsPrefix, avatarID: currentAvatarID))
+        defaults.removeObject(forKey: legacyRingColorDefaultsKey(for: currentAvatarID))
+        applyCurrentRingColorPreset()
+        updateRingColorMenuItems()
+    }
+
+    @objc private func resetRingOpacityForCurrentPet(_ sender: NSMenuItem) {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: ringOpacityDefaultsKey(prefix: outerRingOpacityPresetDefaultsPrefix, avatarID: currentAvatarID))
+        defaults.removeObject(forKey: ringOpacityDefaultsKey(prefix: innerRingOpacityPresetDefaultsPrefix, avatarID: currentAvatarID))
+        applyCurrentRingOpacityPreset()
+        updateRingOpacityMenuItems()
     }
 
     @objc private func refreshNow(_ sender: NSMenuItem) {
