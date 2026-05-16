@@ -40,7 +40,7 @@ Install the rings as a login item:
 tools/install-limit-rings.sh
 ```
 
-You should see a small rings icon in the macOS menu bar. Use that menu to toggle `Show Rings`, refresh the latest usage data, or quit.
+You should see a small rings icon in the macOS menu bar. Use that menu to toggle `Show Rings`, choose ring colors and opacity, refresh the latest usage data, or quit the current app process.
 
 Then use any Codex pet normally. No pet setup step is required.
 
@@ -50,11 +50,21 @@ Run a development build without installing the login item:
 tools/run-limit-rings.sh
 ```
 
-Uninstall everything the installer adds:
+## Managing The App
+
+The installer builds `~/Applications/CodexPetLimitRings.app` and registers a LaunchAgent so the rings can start again after login:
+
+```text
+~/Library/LaunchAgents/com.codex-pet.limit-rings.plist
+```
+
+Choosing `Quit Codex Pet Limit Rings` from the menu bar stops the current app process, but it does not remove the login item. To remove everything the installer adds, run:
 
 ```bash
 tools/uninstall-limit-rings.sh
 ```
+
+The uninstall script unloads the LaunchAgent, removes the app bundle, and clears saved app preferences such as ring visibility, per-pet color presets, and opacity presets.
 
 ## Give This Repo To Codex
 
