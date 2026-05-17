@@ -624,7 +624,7 @@ struct LimitRingRenderer {
     private func limitHUDRows() -> [LimitHUDRow] {
         var rows: [LimitHUDRow] = []
         if let primary = state.primary {
-            rows.append(makeHUDRow(bucket: primary, role: .primary, fallbackLabel: "4h"))
+            rows.append(makeHUDRow(bucket: primary, role: .primary, fallbackLabel: "5h"))
         }
         if let secondary = state.secondary {
             rows.append(makeHUDRow(bucket: secondary, role: .secondary, fallbackLabel: "Week"))
@@ -773,12 +773,12 @@ struct LimitRingRenderer {
     }
 
     private func limitLabel(for bucket: LimitBucket, fallback: String) -> String {
-        if fallback == "4h" || fallback == "Week" {
+        if fallback == "5h" || fallback == "Week" {
             return fallback
         }
         guard let minutes = bucket.windowMinutes else { return fallback }
-        if abs(minutes - 240.0) <= 10.0 {
-            return "4h"
+        if abs(minutes - 300.0) <= 10.0 {
+            return "5h"
         }
         if minutes >= 60.0 * 24.0 * 6.0 {
             return "Week"
