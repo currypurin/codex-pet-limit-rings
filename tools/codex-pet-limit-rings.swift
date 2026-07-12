@@ -905,12 +905,7 @@ final class LimitRingView: NSView {
     }
 
     var shouldAnimate: Bool {
-        if showsReadout {
-            return true
-        }
-        return [state.primary, state.secondary]
-            .compactMap { $0 }
-            .contains { $0.remainingPercent <= 30.0 }
+        showsReadout
     }
 
     override var isOpaque: Bool { false }
