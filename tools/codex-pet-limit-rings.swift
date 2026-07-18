@@ -41,6 +41,7 @@ private let innerRingOpacityPresetDefaultsPrefix = "CodexPetLimitRings.innerOpac
 private let defaultRingColorPresetID = "default"
 private let defaultRingOpacityPresetID = "100"
 private let defaultAvatarColorKey = "__default__"
+private let longWindowThresholdMinutes = 24.0 * 60.0
 private let liveUsageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
 private let codexSettingsURL = URL(string: "codex://settings")!
 
@@ -197,6 +198,34 @@ private struct RatePayload: Decodable {
     var secondary: BucketPayload?
     var primary_window: BucketPayload?
     var secondary_window: BucketPayload?
+
+    func normalizedBuckets() -> (primary: LimitBucket?, secondary: LimitBucket?) {
+        let primarySlot = (primary ?? primary_window)?.toBucket()
+        let secondarySlot = (secondary ?? secondary_window)?.toBucket()
+
+        if let primarySlot, let secondarySlot,
+           let primaryMinutes = primarySlot.windowMinutes,
+           let secondaryMinutes = secondarySlot.windowMinutes,
+           primaryMinutes != secondaryMinutes {
+            return primaryMinutes < secondaryMinutes
+                ? (primarySlot, secondarySlot)
+                : (secondarySlot, primarySlot)
+        }
+
+        if let primarySlot, secondarySlot == nil,
+           let minutes = primarySlot.windowMinutes,
+           minutes > longWindowThresholdMinutes {
+            return (nil, primarySlot)
+        }
+
+        if let secondarySlot, primarySlot == nil,
+           let minutes = secondarySlot.windowMinutes,
+           minutes <= longWindowThresholdMinutes {
+            return (secondarySlot, nil)
+        }
+
+        return (primarySlot, secondarySlot)
+    }
 }
 
 private struct BucketPayload: Decodable {
@@ -265,8 +294,7 @@ final class LimitStateReader {
             return nil
         }
 
-        let primary = (payload.rate_limit?.primary ?? payload.rate_limit?.primary_window)?.toBucket()
-        let secondary = (payload.rate_limit?.secondary ?? payload.rate_limit?.secondary_window)?.toBucket()
+        let buckets: (primary: LimitBucket?, secondary: LimitBucket?) = payload.rate_limit?.normalizedBuckets() ?? (nil, nil)
         let additional = (payload.additional_rate_limits ?? [])
             .compactMap { item -> (String, LimitBucket)? in
                 guard let bucket = (item.rate_limit?.primary ?? item.rate_limit?.primary_window ?? item.rate_limit?.secondary ?? item.rate_limit?.secondary_window)?.toBucket() else {
@@ -276,7 +304,7 @@ final class LimitStateReader {
             }
             .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
 
-        return LimitState(planType: payload.plan_type, primary: primary, secondary: secondary, additional: additional, observedAt: Date(), source: "live")
+        return LimitState(planType: payload.plan_type, primary: buckets.primary, secondary: buckets.secondary, additional: additional, observedAt: Date(), source: "live")
     }
 
     private func readAccessToken() -> String? {
@@ -327,8 +355,7 @@ final class LimitStateReader {
             return .empty
         }
 
-        let primary = (payload.rate_limits?.primary ?? payload.rate_limits?.primary_window)?.toBucket()
-        let secondary = (payload.rate_limits?.secondary ?? payload.rate_limits?.secondary_window)?.toBucket()
+        let buckets: (primary: LimitBucket?, secondary: LimitBucket?) = payload.rate_limits?.normalizedBuckets() ?? (nil, nil)
         let additional = (payload.additional_rate_limits ?? [:])
             .compactMap { name, payload -> (String, LimitBucket)? in
                 guard let bucket = (payload.primary ?? payload.primary_window ?? payload.secondary ?? payload.secondary_window)?.toBucket() else {
@@ -338,7 +365,7 @@ final class LimitStateReader {
             }
             .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
 
-        return LimitState(planType: payload.plan_type, primary: primary, secondary: secondary, additional: additional, observedAt: Date(), source: "log")
+        return LimitState(planType: payload.plan_type, primary: buckets.primary, secondary: buckets.secondary, additional: additional, observedAt: Date(), source: "log")
     }
 
     private func extractRateLimitJSON(from body: String) -> String? {
@@ -384,6 +411,13 @@ final class LimitStateReader {
 }
 
 final class PetFrameReader {
+    private struct MascotCandidate {
+        var key: String
+        var origin: CGPoint?
+        var resolution: String?
+        var mascot: CGRect
+    }
+
     private let globalStatePath: URL
 
     init(globalStatePath: URL) {
@@ -394,18 +428,161 @@ final class PetFrameReader {
         guard let data = try? Data(contentsOf: globalStatePath),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               isAvatarOverlayOpen(root),
-              let bounds = root["electron-avatar-overlay-bounds"] as? [String: Any],
-              let x = number(bounds["x"]),
-              let y = number(bounds["y"]),
-              let mascot = bounds["mascot"] as? [String: Any],
-              let left = number(mascot["left"]),
-              let top = number(mascot["top"]),
-              let width = number(mascot["width"]),
-              let height = number(mascot["height"]) else {
+              let bounds = root["electron-avatar-overlay-bounds"] as? [String: Any] else {
             return nil
         }
 
-        return CGRect(x: x + left, y: y + top, width: width, height: height)
+        if let frame = petFrame(in: bounds) {
+            return frame
+        }
+
+        let displayID = string(bounds["displayId"])
+        let referencePoint = boundsOrigin(in: bounds)
+        let resolution = displayResolution(in: bounds)
+
+        if let candidate = mascotCandidate(
+            inNestedBounds: bounds["byDisplayId"],
+            preferredKey: displayID,
+            preferredResolution: resolution,
+            referencePoint: referencePoint
+        ), let frame = petFrame(candidate: candidate, topLevelOrigin: referencePoint) {
+            return frame
+        }
+
+        guard let candidate = mascotCandidate(
+            inNestedBounds: bounds["byResolution"],
+            preferredKey: resolution,
+            preferredResolution: resolution,
+            referencePoint: referencePoint
+        ), let frame = petFrame(candidate: candidate, topLevelOrigin: referencePoint) else {
+            return nil
+        }
+        return frame
+    }
+
+    private func mascotCandidate(
+        inNestedBounds value: Any?,
+        preferredKey: String?,
+        preferredResolution: String?,
+        referencePoint: CGPoint?
+    ) -> MascotCandidate? {
+        guard let nestedBounds = value as? [String: Any] else { return nil }
+
+        let candidates = nestedBounds.compactMap { key, value -> MascotCandidate? in
+            guard let bounds = value as? [String: Any],
+                  let mascot = mascotFrame(in: bounds) else {
+                return nil
+            }
+            return MascotCandidate(
+                key: key,
+                origin: boundsOrigin(in: bounds),
+                resolution: displayResolution(in: bounds),
+                mascot: mascot
+            )
+        }
+
+        if let preferredKey,
+           let exactMatch = candidates.first(where: { $0.key == preferredKey }) {
+            return exactMatch
+        }
+
+        if let preferredResolution {
+            let resolutionMatches = candidates.filter { $0.resolution == preferredResolution }
+            if let closestMatch = closestCandidate(in: resolutionMatches, to: referencePoint) {
+                return closestMatch
+            }
+        }
+
+        return closestCandidate(in: candidates, to: referencePoint)
+    }
+
+    private func petFrame(in bounds: [String: Any]) -> CGRect? {
+        guard let origin = boundsOrigin(in: bounds),
+              let mascot = mascotFrame(in: bounds) else {
+            return nil
+        }
+        return petFrame(origin: origin, mascot: mascot)
+    }
+
+    private func petFrame(origin: CGPoint, mascot: CGRect) -> CGRect {
+        CGRect(
+            x: origin.x + mascot.minX,
+            y: origin.y + mascot.minY,
+            width: mascot.width,
+            height: mascot.height
+        )
+    }
+
+    private func petFrame(candidate: MascotCandidate, topLevelOrigin: CGPoint?) -> CGRect? {
+        if let topLevelOrigin {
+            return CGRect(origin: topLevelOrigin, size: candidate.mascot.size)
+        }
+        guard let candidateOrigin = candidate.origin else { return nil }
+        return petFrame(origin: candidateOrigin, mascot: candidate.mascot)
+    }
+
+    private func mascotFrame(in bounds: [String: Any]) -> CGRect? {
+        guard let mascot = bounds["mascot"] as? [String: Any],
+              let left = number(mascot["left"]),
+              let top = number(mascot["top"]),
+              let width = number(mascot["width"]),
+              let height = number(mascot["height"]),
+              width > 0,
+              height > 0 else {
+            return nil
+        }
+        return CGRect(x: left, y: top, width: width, height: height)
+    }
+
+    private func boundsOrigin(in bounds: [String: Any]) -> CGPoint? {
+        guard let x = number(bounds["x"]),
+              let y = number(bounds["y"]) else {
+            return nil
+        }
+        return CGPoint(x: x, y: y)
+    }
+
+    private func displayResolution(in bounds: [String: Any]) -> String? {
+        guard let displayBounds = bounds["displayBounds"] as? [String: Any],
+              let width = number(displayBounds["width"]),
+              let height = number(displayBounds["height"]) else {
+            return nil
+        }
+        return "\(Int(width.rounded()))x\(Int(height.rounded()))"
+    }
+
+    private func distanceSquared(_ point: CGPoint?, to referencePoint: CGPoint) -> CGFloat {
+        guard let point else { return .greatestFiniteMagnitude }
+        let dx = point.x - referencePoint.x
+        let dy = point.y - referencePoint.y
+        return dx * dx + dy * dy
+    }
+
+    private func closestCandidate(
+        in candidates: [MascotCandidate],
+        to referencePoint: CGPoint?
+    ) -> MascotCandidate? {
+        guard let referencePoint else {
+            return candidates.min { $0.key < $1.key }
+        }
+        return candidates.min { lhs, rhs in
+            let lhsDistance = distanceSquared(lhs.origin, to: referencePoint)
+            let rhsDistance = distanceSquared(rhs.origin, to: referencePoint)
+            if lhsDistance != rhsDistance {
+                return lhsDistance < rhsDistance
+            }
+            return lhs.key < rhs.key
+        }
+    }
+
+    private func string(_ value: Any?) -> String? {
+        if let value = value as? String {
+            return value
+        }
+        if let value = value as? NSNumber {
+            return value.stringValue
+        }
+        return nil
     }
 
     func readSelectedAvatarID() -> String? {
@@ -1851,6 +2028,19 @@ func defaultLogsPath(codexHome: URL) -> URL {
     return codexHome.appendingPathComponent("logs_1.sqlite")
 }
 
+#if PET_FRAME_READER_TEST
+guard CommandLine.arguments.count == 2 else {
+    fputs("Usage: pet-frame-reader-test STATE_PATH\n", stderr)
+    exit(2)
+}
+
+let testStatePath = URL(fileURLWithPath: CommandLine.arguments[1])
+guard let testFrame = PetFrameReader(globalStatePath: testStatePath).readPetFrameTopLeft() else {
+    fputs("pet-frame-reader-test: no pet frame\n", stderr)
+    exit(1)
+}
+print("\(Int(testFrame.minX)) \(Int(testFrame.minY)) \(Int(testFrame.width)) \(Int(testFrame.height))")
+#else
 guard let config = parseConfig() else {
     fputs("codex-pet-limit-rings: invalid arguments. Use --help.\n", stderr)
     exit(2)
@@ -1865,3 +2055,4 @@ app.setActivationPolicy(.accessory)
 let rings = LimitRingsApp(config: config)
 rings.run()
 app.run()
+#endif

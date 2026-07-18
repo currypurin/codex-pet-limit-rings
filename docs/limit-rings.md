@@ -25,14 +25,18 @@ The app reads live usage first, then local files as support or fallback:
 
 - `https://chatgpt.com/backend-api/wham/usage`: live usage endpoint, called with the local ChatGPT access token from `~/.codex/auth.json`.
 - `~/.codex/auth.json`: local ChatGPT auth token used for the live usage call.
-- `~/.codex/.codex-global-state.json`: current pet bounds, using `electron-avatar-overlay-bounds.mascot`.
+- `~/.codex/.codex-global-state.json`: current pet bounds, using `electron-avatar-overlay-bounds.mascot` or compatible mascot geometry under `byDisplayId` / `byResolution` when Codex writes an incomplete top-level record.
 - `electron-avatar-overlay-open` in the same state file: whether the Codex pet is currently open.
 - `electron-persisted-atom-state.selected-avatar-id` in the same state file: current pet id used to remember ring color and opacity settings per pet.
 - `~/.codex/logs_2.sqlite`: fallback source using the newest `codex.rate_limits` event when the live usage call fails.
 
 The app watches `~/.codex/.codex-global-state.json` with a macOS file event source, so pet open/close and position writes trigger an immediate frame update. A slow frame timer remains as a fallback in case the file is replaced or an event is missed.
 
+On multi-display setups, Codex can persist only the selected display id and moving mascot origin at the top level while keeping mascot size in a nested display or resolution entry. The app selects a compatible nested size and combines it with the live top-level mascot origin without reapplying the nested entry's stale relative offset, so the rings remain aligned and continue to follow pet drags.
+
 No OpenAI API key is required. The menu summary says `Live` when the direct usage read succeeds and `Cached` when it is showing the local event-log fallback.
+
+Codex may move the weekly bucket into the API's primary slot when the short-window limit is temporarily unavailable. The app classifies available buckets by their window duration, so a seven-day bucket remains the weekly inner ring instead of being mislabeled as the short-window ring.
 
 ## Rendering Model
 
