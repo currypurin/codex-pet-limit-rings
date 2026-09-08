@@ -27,12 +27,18 @@ The app reads live usage first, then local files as support or fallback:
 - `~/.codex/auth.json`: local ChatGPT auth token used for the live usage call.
 - `~/.codex/.codex-global-state.json`: current pet bounds, using `electron-avatar-overlay-bounds.mascot` or compatible mascot geometry under `byDisplayId` / `byResolution` when Codex writes an incomplete top-level record.
 - `electron-avatar-overlay-open` in the same state file: whether the Codex pet is currently open.
-- `electron-persisted-atom-state.selected-avatar-id` in the same state file: current pet id used to remember ring color and opacity settings per pet.
+- `~/.codex/config.toml`, `[desktop]`: current `selected-avatar-id`, `avatar-overlay-mascot-width-px`, and `avatar-overlay-pet-visible` settings. Older installations fall back to `electron-persisted-atom-state.selected-avatar-id` for per-pet colors.
 - `~/.codex/logs_2.sqlite`: fallback source using the newest `codex.rate_limits` event when the live usage call fails.
 
-The app watches `~/.codex/.codex-global-state.json` with a macOS file event source, so pet open/close and position writes trigger an immediate frame update. A slow frame timer remains as a fallback in case the file is replaced or an event is missed.
+The app caches only the latest desktop pet preferences and reparses the config when its modification time, size, or inode changes. The existing two-second frame timer also picks up config edits, including atomic file replacement. No additional polling timer, child process, accessibility permission, or screen capture is required. Configs larger than 1 MiB are not parsed; the reader uses defaults instead. The small preference reader supports single-line integer, boolean, basic-string and literal-string values in a `[desktop]` table (including quoted table/key names and trailing comments); it is not a general TOML parser.
+
+The app watches `~/.codex/.codex-global-state.json` with a macOS file event source, so pet open/close and position writes trigger a frame update within a 100ms coalescing window. Repeated notifications share one pending update, avoiding starvation during continuous writes. Drag following still uses the mouse gesture directly. A slow frame timer remains as a fallback in case the file is replaced or an event is missed.
+
+Global state reads retain only one compact pet snapshot. File metadata changes or filesystem notifications invalidate it; unchanged fallback polls skip JSON loading entirely. A selective decoder ignores unrelated task/workspace fields, and temporary decoding objects are released in an explicit autorelease pool. A malformed partial write clears the snapshot and is retried on the next read. Release app bundles compile with `swiftc -O`.
 
 On multi-display setups, Codex can persist only the selected display id and moving mascot origin at the top level while keeping mascot size in a nested display or resolution entry. The app selects a compatible nested size and combines it with the live top-level mascot origin without reapplying the nested entry's stale relative offset, so the rings remain aligned and continue to follow pet drags.
+
+Current native Codex builds persist a mascot anchor directly as `x` / `y` and omit the `mascot` rectangle. When no legacy rectangle is available, a recognized placement and display record enables native fallback geometry. Width comes from the desktop size setting (80–224 px); height follows the renderer’s 192:208 aspect ratio. At the default setting of 112, the current renderer uses 7.04rem, so the fallback uses 113 × 123 after upward rounding at a 16px root font. This is a compatibility assumption tied to the current renderer, not a live measurement: nonstandard root font scaling and future layout changes may require an update. Unknown or malformed explicit geometry remains hidden.
 
 No OpenAI API key is required. The menu summary says `Live` when the direct usage read succeeds and `Cached` when it is showing the local event-log fallback.
 
@@ -87,6 +93,22 @@ Render a static preview:
 swiftc tools/codex-pet-limit-rings.swift -o tmp/codex-pet-limit-rings -framework AppKit -lsqlite3
 tmp/codex-pet-limit-rings --preview tmp/limit-rings-preview.png --size 164
 ```
+
+
+Run the geometry and preference regression checks (no live credentials or GUI required):
+
+```bash
+tools/test-pet-frame-reader.sh
+```
+
+Measure the current reader without opening a GUI or querying usage (the second mode forces a reload for every simulated file event):
+
+```bash
+tools/benchmark-pet-frame-reader.sh ~/.codex/.codex-global-state.json 1000 cached
+tools/benchmark-pet-frame-reader.sh ~/.codex/.codex-global-state.json 1000 changed
+```
+
+`time -l` reports the reader process separately from compilation. This is a microbenchmark, not the whole app. For a running app compare process CPU-time deltas over an idle interval, RSS from `ps`, and physical footprint from `vmmap -summary`; keep these memory metrics separate.
 
 ## Codex Skill
 

@@ -61,12 +61,13 @@ launchctl print "gui/$(id -u)/com.codex-pet.limit-rings" >/dev/null
 The rings read:
 
 - `~/.codex/auth.json` for a local ChatGPT access token, then `https://chatgpt.com/backend-api/wham/usage` for live usage data.
-- `~/.codex/.codex-global-state.json` for `electron-avatar-overlay-open` and `electron-avatar-overlay-bounds.mascot`.
+- `~/.codex/.codex-global-state.json` for `electron-avatar-overlay-open` and legacy mascot rectangles or native anchor coordinates.
+- `~/.codex/config.toml` for the three desktop pet preferences: selected avatar, width, and visibility. The native default size assumes the current renderer at a 16px root font; verify alignment after Codex layout changes.
 - `~/.codex/logs_2.sqlite` for fallback to the newest `codex.rate_limits` event when live usage fails.
 
 The outer ring is the short-window remaining percentage. The inner ring is the weekly remaining percentage. The menu summary should say `Live` when direct usage succeeds and `Cached` when the local log fallback is active.
 
-Pet wakeups and moves are driven by a filesystem watcher on `~/.codex/.codex-global-state.json`, with a slow fallback timer for missed events. Keep that event-driven path intact when changing frame-following behavior.
+Pet wakeups and moves are driven by a filesystem watcher on `~/.codex/.codex-global-state.json`, with a slow fallback timer for missed events. Keep that event-driven path intact when changing frame-following behavior. The state reader caches only the small pet snapshot; filesystem notifications must invalidate that cache. Bursts are coalesced within 100ms while mouse-driven dragging stays immediate.
 
 Right-clicking the pet opens Codex Settings through Codex's settings deep link. Do not implement projectless new chat by mutating Codex's `active-workspace-roots` or by replaying keyboard/menu UI automation; a running Codex process keeps workspace state in memory, and Codex does not currently expose a reliable external new-tab projectless command.
 
@@ -76,7 +77,7 @@ When changing behavior or visuals:
 
 1. Edit `tools/codex-pet-limit-rings.swift`.
 2. Keep packaging scripts in `tools/` and update `docs/limit-rings.md` when the user-facing contract changes.
-3. Run:
+3. Run `tools/test-pet-frame-reader.sh` for geometry/preference changes, then:
 
 ```bash
 bash -n tools/*.sh
