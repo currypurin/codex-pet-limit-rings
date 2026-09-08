@@ -67,7 +67,7 @@ The rings read:
 
 The outer ring is the short-window remaining percentage. The inner ring is the weekly remaining percentage. The menu summary should say `Live` when direct usage succeeds and `Cached` when the local log fallback is active.
 
-Pet wakeups and moves are driven by a filesystem watcher on `~/.codex/.codex-global-state.json`, with a slow fallback timer for missed events. Keep that event-driven path intact when changing frame-following behavior.
+Pet wakeups and moves are driven by a filesystem watcher on `~/.codex/.codex-global-state.json`, with a slow fallback timer for missed events. Keep that event-driven path intact when changing frame-following behavior. The state reader caches only the small pet snapshot; filesystem notifications must invalidate that cache. Bursts are coalesced within 100ms while mouse-driven dragging stays immediate.
 
 Right-clicking the pet opens Codex Settings through Codex's settings deep link. Do not implement projectless new chat by mutating Codex's `active-workspace-roots` or by replaying keyboard/menu UI automation; a running Codex process keeps workspace state in memory, and Codex does not currently expose a reliable external new-tab projectless command.
 

@@ -26,7 +26,7 @@ struct LimitState {
 
 private let limitStatePollInterval: TimeInterval = 20.0
 private let petFrameFallbackPollInterval: TimeInterval = 2.0
-private let petFrameStateDebounceInterval: TimeInterval = 0.035
+private let petFrameStateDebounceInterval: TimeInterval = 0.1
 private let ringAnimationFrameInterval: TimeInterval = 1.0 / 6.0
 private let ringPanelPadding: CGFloat = 38.0
 private let readoutBottomExtension: CGFloat = 44.0
@@ -410,6 +410,59 @@ final class LimitStateReader {
     }
 }
 
+// File identity includes subsecond modification time and inode for atomic saves.
+private struct PetFileStamp: Equatable {
+    var modified: Date?
+    var size: UInt64
+    var inode: UInt64
+
+    init(path: URL) {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path.path)
+        modified = attributes?[.modificationDate] as? Date
+        size = (attributes?[.size] as? NSNumber)?.uint64Value ?? 0
+        inode = (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+    }
+}
+
+// Decode only the small pet subtrees. Unrelated task/workspace state never becomes
+// a retained Foundation object graph, even when the global JSON is several MB.
+private struct PetStateSnapshot: Decodable {
+    var isOpen: Bool = true
+    var bounds: [String: Any]?
+    var avatarID: String?
+
+    private enum Keys: String, CodingKey {
+        case open = "electron-avatar-overlay-open"
+        case bounds = "electron-avatar-overlay-bounds"
+        case atoms = "electron-persisted-atom-state"
+        case avatar = "selected-avatar-id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Keys.self)
+        if let open = try? container.decode(Bool.self, forKey: .open) { isOpen = open }
+        else if let open = try? container.decode(Double.self, forKey: .open) { isOpen = open != 0 }
+        bounds = try container.decodeIfPresent(PetJSONValue.self, forKey: .bounds)?.object as? [String: Any]
+        if let atoms = try? container.nestedContainer(keyedBy: Keys.self, forKey: .atoms) {
+            avatarID = try? atoms.decode(String.self, forKey: .avatar)
+        }
+    }
+}
+
+private struct PetJSONValue: Decodable {
+    let object: Any
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { object = NSNull() }
+        else if let value = try? container.decode(Bool.self) { object = value }
+        else if let value = try? container.decode(Int64.self) { object = value }
+        else if let value = try? container.decode(Double.self) { object = value }
+        else if let value = try? container.decode(String.self) { object = value }
+        else if let value = try? container.decode([String: PetJSONValue].self) { object = value.mapValues(\.object) }
+        else { object = try container.decode([PetJSONValue].self).map(\.object) }
+    }
+}
+
 // Only the three scalar desktop preferences needed by the overlay are read.
 // Cache one snapshot; never start a Codex process or retain configuration history.
 final class DesktopPetPreferences {
@@ -420,27 +473,17 @@ final class DesktopPetPreferences {
     }
 
     private let path: URL
-    private struct Signature: Equatable {
-        var modified: Date?
-        var size: UInt64
-        var inode: UInt64
-    }
-    private var signature: Signature?
+    private var signature: PetFileStamp?
     private var cached = Values()
 
     init(path: URL) { self.path = path }
 
     func read() -> Values {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: path.path)
-        let nextSignature = Signature(
-            modified: attributes?[.modificationDate] as? Date,
-            size: (attributes?[.size] as? NSNumber)?.uint64Value ?? 0,
-            inode: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
-        )
+        let nextSignature = PetFileStamp(path: path)
         guard nextSignature != signature else { return cached }
         signature = nextSignature
         cached = Values()
-        guard let size = attributes?[.size] as? NSNumber, size.intValue <= 1_048_576,
+        guard nextSignature.size <= 1_048_576,
               let text = try? String(contentsOf: path, encoding: .utf8) else { return cached }
         var inDesktop = false
         for rawLine in text.split(whereSeparator: \.isNewline) {
@@ -504,6 +547,24 @@ final class PetFrameReader {
     private let globalStatePath: URL
     private let preferences: DesktopPetPreferences
     private var selectedAvatarID: String?
+    private var stateStamp: PetFileStamp?
+    private var stateSnapshot: PetStateSnapshot?
+
+    // File events bypass metadata equality; the timer can reuse an unchanged snapshot.
+    func invalidateState() { stateStamp = nil }
+
+    private func readSnapshot() -> PetStateSnapshot? {
+        let stamp = PetFileStamp(path: globalStatePath)
+        if stateStamp == stamp { return stateSnapshot }
+        let snapshot: PetStateSnapshot? = autoreleasepool {
+            guard let data = try? Data(contentsOf: globalStatePath) else { return nil }
+            return try? JSONDecoder().decode(PetStateSnapshot.self, from: data)
+        }
+        stateSnapshot = snapshot
+        // Retry partial writes on the next call, even if their timestamp is unchanged.
+        stateStamp = snapshot == nil ? nil : stamp
+        return snapshot
+    }
 
     init(globalStatePath: URL, preferencesPath: URL? = nil) {
         self.globalStatePath = globalStatePath
@@ -514,15 +575,9 @@ final class PetFrameReader {
         let desktop = preferences.read()
         selectedAvatarID = desktop.avatarID
         guard desktop.visible else { return nil }
-        guard let data = try? Data(contentsOf: globalStatePath),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              isAvatarOverlayOpen(root),
-              let bounds = root["electron-avatar-overlay-bounds"] as? [String: Any] else {
-            return nil
-        }
-
-        let atomState = root["electron-persisted-atom-state"] as? [String: Any]
-        selectedAvatarID = desktop.avatarID ?? atomState?["selected-avatar-id"] as? String
+        guard let snapshot = readSnapshot(), snapshot.isOpen,
+              let bounds = snapshot.bounds else { return nil }
+        selectedAvatarID = desktop.avatarID ?? snapshot.avatarID
 
         if let frame = petFrame(in: bounds) {
             return frame
@@ -690,16 +745,6 @@ final class PetFrameReader {
 
     // Updated together with the frame to avoid decoding the global state twice.
     func readSelectedAvatarID() -> String? { selectedAvatarID }
-
-    private func isAvatarOverlayOpen(_ root: [String: Any]) -> Bool {
-        if let isOpen = root["electron-avatar-overlay-open"] as? Bool {
-            return isOpen
-        }
-        if let isOpen = root["electron-avatar-overlay-open"] as? NSNumber {
-            return isOpen.boolValue
-        }
-        return true
-    }
 
     private func number(_ value: Any?) -> CGFloat? {
         if let value = value as? NSNumber {
@@ -1325,6 +1370,7 @@ final class LimitRingsApp: NSObject {
         source.setEventHandler { [weak self] in
             guard let self else { return }
             let events = self.globalStateSource?.data ?? []
+            self.frameReader.invalidateState()
             self.scheduleFrameUpdateFromGlobalState()
             if events.contains(.delete) || events.contains(.rename) {
                 self.scheduleGlobalStateWatcherRestart(after: 0.2)
@@ -1350,7 +1396,8 @@ final class LimitRingsApp: NSObject {
     }
 
     private func scheduleFrameUpdateFromGlobalState() {
-        pendingFrameUpdate?.cancel()
+        // Coalesce bursts without postponing updates indefinitely during sustained writes.
+        guard pendingFrameUpdate == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingFrameUpdate = nil

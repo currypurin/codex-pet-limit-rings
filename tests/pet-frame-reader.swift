@@ -68,4 +68,40 @@ try FileManager.default.removeItem(at: configPath)
 check(reader.readPetFrameTopLeft()?.width == 113, "deleted configuration invalidates cache")
 try writeConfig(String(repeating: "#", count: 1_048_577))
 check(reader.readPetFrameTopLeft()?.width == 113, "oversized configuration is not parsed")
+
+try writeConfig("[desktop]\n")
+var alternate = legacy
+alternate["mascot"] = ["left": 0, "top": 0, "width": 200, "height": 210]
+nested = native
+nested["byDisplayId"] = ["1": alternate, "3": legacy]
+try writeState(nested)
+check(reader.readPetFrameTopLeft()?.width == 100, "numeric display ID preserves exact nested match")
+// Cache must observe movement, including same-length edits and atomic replacement.
+try writeState(native)
+_ = reader.readPetFrameTopLeft()
+native["x"] = -1100
+try writeState(native)
+check(reader.readPetFrameTopLeft()?.minX == -1100, "cached state invalidates on replacement")
+let before = try Data(contentsOf: statePath)
+let after = Data(String(decoding: before, as: UTF8.self).replacingOccurrences(of: "-1100", with: "-1000").utf8)
+try after.write(to: statePath)
+check(reader.readPetFrameTopLeft()?.minX == -1000, "cached state invalidates on direct edit")
+// A real write event must refresh even if a writer preserves file metadata.
+let attributes = try FileManager.default.attributesOfItem(atPath: statePath.path)
+try Data(String(decoding: after, as: UTF8.self).replacingOccurrences(of: "-1000", with: "-1200").utf8).write(to: statePath)
+try FileManager.default.setAttributes([.modificationDate: attributes[.modificationDate]!], ofItemAtPath: statePath.path)
+reader.invalidateState()
+check(reader.readPetFrameTopLeft()?.minX == -1200, "event invalidation overrides unchanged metadata")
+try Data("{".utf8).write(to: statePath)
+check(reader.readPetFrameTopLeft() == nil, "partial JSON hides stale geometry")
+try writeState(native)
+check(reader.readPetFrameTopLeft() != nil, "partial write recovery")
+try FileManager.default.removeItem(at: statePath)
+check(reader.readPetFrameTopLeft() == nil, "state deletion clears cached geometry")
+let noisy: [String: Any] = ["electron-avatar-overlay-open": true, "electron-avatar-overlay-bounds": native,
+    "unrelated": ["electron-avatar-overlay-open": false, "text": String(repeating: "unrelated", count: 200_000)],
+    "electron-persisted-atom-state": ["selected-avatar-id": "custom:legacy", "unrelated": ["selected-avatar-id": "wrong"]]]
+try JSONSerialization.data(withJSONObject: noisy).write(to: statePath, options: .atomic)
+check(reader.readPetFrameTopLeft()?.minX == -1100, "large unrelated state does not affect geometry")
+check(reader.readSelectedAvatarID() == "custom:legacy", "selected ID comes from the correct level")
 print("Passed \(checks) pet frame checks")

@@ -8,7 +8,7 @@ BIN="$APP/Contents/MacOS/CodexPetLimitRings"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$ROOT/tools/CodexPetLimitRings-Info.plist" "$APP/Contents/Info.plist"
-swiftc "$ROOT/tools/codex-pet-limit-rings.swift" -o "$BIN" -framework AppKit -lsqlite3
+swiftc -O "$ROOT/tools/codex-pet-limit-rings.swift" -o "$BIN" -framework AppKit -lsqlite3
 
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
