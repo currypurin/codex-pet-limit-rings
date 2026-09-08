@@ -410,6 +410,89 @@ final class LimitStateReader {
     }
 }
 
+// Only the three scalar desktop preferences needed by the overlay are read.
+// Cache one snapshot; never start a Codex process or retain configuration history.
+final class DesktopPetPreferences {
+    struct Values {
+        var avatarID: String?
+        var width: CGFloat = 112
+        var visible = true
+    }
+
+    private let path: URL
+    private struct Signature: Equatable {
+        var modified: Date?
+        var size: UInt64
+        var inode: UInt64
+    }
+    private var signature: Signature?
+    private var cached = Values()
+
+    init(path: URL) { self.path = path }
+
+    func read() -> Values {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path.path)
+        let nextSignature = Signature(
+            modified: attributes?[.modificationDate] as? Date,
+            size: (attributes?[.size] as? NSNumber)?.uint64Value ?? 0,
+            inode: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+        )
+        guard nextSignature != signature else { return cached }
+        signature = nextSignature
+        cached = Values()
+        guard let size = attributes?[.size] as? NSNumber, size.intValue <= 1_048_576,
+              let text = try? String(contentsOf: path, encoding: .utf8) else { return cached }
+        var inDesktop = false
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let line = stripComment(String(rawLine)).trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") {
+                inDesktop = ["[desktop]", "[\"desktop\"]", "['desktop']"].contains(line)
+                continue
+            }
+            guard inDesktop, let separator = line.firstIndex(of: "=") else { continue }
+            let rawKey = String(line[..<separator]).trimmingCharacters(in: .whitespaces)
+            let key = decodeString(rawKey) ?? rawKey
+            let value = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
+            switch key {
+            case "selected-avatar-id":
+                cached.avatarID = decodeString(value).flatMap { $0.isEmpty ? nil : $0 }
+            case "avatar-overlay-mascot-width-px":
+                if let width = Int(value.replacingOccurrences(of: "_", with: "")), (80...224).contains(width) {
+                    cached.width = CGFloat(width)
+                }
+            case "avatar-overlay-pet-visible":
+                if value == "false" { cached.visible = false }
+                else if value == "true" { cached.visible = true }
+            default: break
+            }
+        }
+        return cached
+    }
+
+    private func stripComment(_ line: String) -> String {
+        var quote: Character?
+        var escaped = false
+        for index in line.indices {
+            let character = line[index]
+            if escaped { escaped = false; continue }
+            if quote == "\"" && character == "\\" { escaped = true; continue }
+            if let current = quote {
+                if character == current { quote = nil }
+            } else if character == "\"" || character == "'" { quote = character }
+            else if character == "#" { return String(line[..<index]) }
+        }
+        return line
+    }
+
+    private func decodeString(_ value: String) -> String? {
+        if value.hasPrefix("'"), value.hasSuffix("'"), value.count >= 2 {
+            return String(value.dropFirst().dropLast())
+        }
+        guard value.hasPrefix("\""), let data = value.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) as? String
+    }
+}
+
 final class PetFrameReader {
     private struct MascotCandidate {
         var key: String
@@ -419,18 +502,27 @@ final class PetFrameReader {
     }
 
     private let globalStatePath: URL
+    private let preferences: DesktopPetPreferences
+    private var selectedAvatarID: String?
 
-    init(globalStatePath: URL) {
+    init(globalStatePath: URL, preferencesPath: URL? = nil) {
         self.globalStatePath = globalStatePath
+        self.preferences = DesktopPetPreferences(path: preferencesPath ?? globalStatePath.deletingLastPathComponent().appendingPathComponent("config.toml"))
     }
 
     func readPetFrameTopLeft() -> CGRect? {
+        let desktop = preferences.read()
+        selectedAvatarID = desktop.avatarID
+        guard desktop.visible else { return nil }
         guard let data = try? Data(contentsOf: globalStatePath),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               isAvatarOverlayOpen(root),
               let bounds = root["electron-avatar-overlay-bounds"] as? [String: Any] else {
             return nil
         }
+
+        let atomState = root["electron-persisted-atom-state"] as? [String: Any]
+        selectedAvatarID = desktop.avatarID ?? atomState?["selected-avatar-id"] as? String
 
         if let frame = petFrame(in: bounds) {
             return frame
@@ -449,15 +541,26 @@ final class PetFrameReader {
             return frame
         }
 
-        guard let candidate = mascotCandidate(
+        if let candidate = mascotCandidate(
             inNestedBounds: bounds["byResolution"],
             preferredKey: resolution,
             preferredResolution: resolution,
             referencePoint: referencePoint
-        ), let frame = petFrame(candidate: candidate, topLevelOrigin: referencePoint) else {
-            return nil
+        ), let frame = petFrame(candidate: candidate, topLevelOrigin: referencePoint) {
+            return frame
         }
-        return frame
+
+        // Native Codex persists the mascot anchor directly, without a mascot rect.
+        // Require a recognizable record so incomplete/invalid legacy data stays hidden.
+        guard bounds["mascot"] == nil,
+              let origin = referencePoint,
+              let placement = bounds["placement"] as? String,
+              ["top-start", "top-end", "bottom-start", "bottom-end"].contains(placement),
+              resolution != nil else { return nil }
+        // Current renderer uses 7.04rem (16px root) for the default setting;
+        // custom sizes use px. The reported DOM dimensions are rounded upward.
+        let width = desktop.width == 112 ? 7.04 * 16 : desktop.width
+        return CGRect(x: origin.x, y: origin.y, width: ceil(width), height: ceil(width * 208 / 192))
     }
 
     private func mascotCandidate(
@@ -585,16 +688,8 @@ final class PetFrameReader {
         return nil
     }
 
-    func readSelectedAvatarID() -> String? {
-        guard let data = try? Data(contentsOf: globalStatePath),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let atomState = root["electron-persisted-atom-state"] as? [String: Any],
-              let avatarID = atomState["selected-avatar-id"] as? String,
-              !avatarID.isEmpty else {
-            return nil
-        }
-        return avatarID
-    }
+    // Updated together with the frame to avoid decoding the global state twice.
+    func readSelectedAvatarID() -> String? { selectedAvatarID }
 
     private func isAvatarOverlayOpen(_ root: [String: Any]) -> Bool {
         if let isOpen = root["electron-avatar-overlay-open"] as? Bool {
@@ -1143,7 +1238,7 @@ final class LimitRingsApp: NSObject {
     init(config: LimitRingsConfig) {
         self.config = config
         self.stateReader = LimitStateReader(logsPath: config.logsPath, authPath: config.authPath)
-        self.frameReader = PetFrameReader(globalStatePath: config.globalStatePath)
+        self.frameReader = PetFrameReader(globalStatePath: config.globalStatePath, preferencesPath: config.codexHome.appendingPathComponent("config.toml"))
         self.ringView = LimitRingView(frame: CGRect(origin: .zero, size: CGSize(width: config.fallbackSize, height: config.fallbackSize)))
         self.ringsVisible = UserDefaults.standard.object(forKey: ringsVisibleDefaultsKey) as? Bool ?? true
         self.panel = NSPanel(

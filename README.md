@@ -94,6 +94,7 @@ tools/install-codex-skill.sh
 The app reads only local Codex files and one ChatGPT usage endpoint:
 
 - `~/.codex/.codex-global-state.json` tells it whether the pet is open and where it is.
+- `~/.codex/config.toml` provides current desktop pet size, visibility, and pet identity settings.
 - `~/.codex/auth.json` provides the local bearer token used to read live usage from ChatGPT.
 - `~/.codex/logs_2.sqlite` is used as a cached fallback if live usage is unavailable.
 
